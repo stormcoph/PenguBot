@@ -1,0 +1,39 @@
+# Core ML and CUDA
+torch==2.5.0+cu118
+torchvision==0.20.0+cu118
+torchaudio==2.5.0+cu118
+tensorrt-cu12==10.3.0
+tensorrt-cu12_bindings==10.3.0
+tensorrt-cu12_libs==10.3.0
+torch_tensorrt==2.5.0
+pycuda==2024.1.2
+numpy==1.26.0
+
+# Computer Vision
+opencv-python==4.10.0.84
+bettercam==1.0.0
+dxcam==0.0.5
+mss==10.0.0
+
+# GUI and Windows Interface
+PyQt5==5.15.11
+pywin32==308
+pyserial==3.5
+
+# Utilities and Dependencies
+coloredlogs==15.0.1
+humanfriendly==10.0
+pillow==10.2.0
+protobuf==3.20.2
+six==1.17.0
+tqdm==4.67.1
+typing_extensions==4.9.0
+setuptools>=68.2.0
+wheel>=0.41.2
+
+# Notes:
+# 1. CUDA 11.8 should be installed separately
+# 2. Appropriate NVIDIA drivers required (recommended: 566.36 or later)
+# 3. Some packages may require Visual C++ build tools for Windows
+# 4. Install PyTorch with CUDA 11.8 using:
+#    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118

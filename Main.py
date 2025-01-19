@@ -21,7 +21,7 @@ RIGHT = LEFT + REGION_WIDTH
 BOTTOM = TOP + REGION_HEIGHT
 
 # Overlay toggle
-overlay_enabled = False
+overlay_enabled = True
 
 
 class Overlay(QWidget):

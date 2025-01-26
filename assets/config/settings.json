@@ -1,0 +1,21 @@
+{
+    "Aimbot": {
+        "enabled": true,
+        "fov": 507.0,
+        "target_height_1": 0.171,
+        "target_height_2": 0.1,
+        "speed": 0.08
+    },
+    "AI": {
+        "confidence": 0.749,
+        "nms_iou_threshold": 0.882,
+        "model": "csgo2_best.engine"
+    },
+    "Visual": {
+        "fps": true,
+        "fov": false,
+        "target": false,
+        "fps_x": 2029.0,
+        "fps_y": 41.0
+    }
+}

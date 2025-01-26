@@ -1,6 +1,5 @@
 # Core ML and CUDA
 torch==2.5.0+cu118
-torchvision==0.20.0+cu118
 torchaudio==2.5.0+cu118
 tensorrt-cu12==10.3.0
 tensorrt-cu12_bindings==10.3.0
@@ -37,3 +36,4 @@ wheel>=0.41.2
 # 3. Some packages may require Visual C++ build tools for Windows
 # 4. Install PyTorch with CUDA 11.8 using:
 #    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+

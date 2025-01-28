@@ -9,12 +9,13 @@ import win32api
 import math
 from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtGui import QPainter, QColor, QPen, QLinearGradient, QFont, QBrush
-from PyQt5.QtCore import Qt, QTimer, QPointF
-from queue import Queue, Empty, Full
+from PyQt5.QtCore import Qt, QTimer, QPointF, QThread
 import threading
+from queue import Queue, Empty, Full
 import json
 from pathlib import Path
 from gui.ConfigManager import ConfigManager
+import numpy as np
 
 # Initialize config manager at module level
 settings_manager = ConfigManager()
@@ -34,7 +35,47 @@ key_states = {
     0x32: False,  # Key '2'
 }
 
+class UpdateThread(QThread):
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+        
+    def run(self):
+        while True:
+            self.widget.update_position()
+            time.sleep(0.5)  # 500ms interval
 
+class FrameRingBuffer:
+    def __init__(self, buffer_size=3, frame_shape=None):
+        self.size = buffer_size
+        self.frame_shape = frame_shape
+        self.buffer = [None] * buffer_size if frame_shape is None else np.zeros((buffer_size, *frame_shape), dtype=np.uint8)
+        self.write_idx = 0
+        self.read_idx = 0
+        self._lock = threading.Lock()
+        self.frames_processed = 0
+        self.frames_dropped = 0
+
+    def put_frame(self, frame):
+        if self.frame_shape is None and frame is not None:
+            self.frame_shape = frame.shape
+            self.buffer = np.zeros((self.size, *self.frame_shape), dtype=np.uint8)
+
+        with self._lock:
+            next_write = (self.write_idx + 1) % self.size
+            if next_write == self.read_idx:
+                self.read_idx = (self.read_idx + 1) % self.size
+                self.frames_dropped += 1
+            np.copyto(self.buffer[self.write_idx], frame)
+            self.write_idx = next_write
+            self.frames_processed += 1
+
+    def get_latest_frame(self):
+        with self._lock:
+            if self.write_idx == self.read_idx:
+                return None
+            prev_write = (self.write_idx - 1) % self.size
+            return self.buffer[prev_write].copy()
 
 class FOVOverlay(QWidget):
     def __init__(self):
@@ -49,51 +90,38 @@ class FOVOverlay(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        # Use PRIMARY color with transparency
         border_color = QColor(Colors.PRIMARY)
         border_color.setAlpha(80)
-        painter.setPen(QPen(border_color, 1))  # Changed to 1px width
-
-        # Draw full size rectangle with proper 1px borders
+        painter.setPen(QPen(border_color, 1))
         painter.drawRect(0, 0, REGION_WIDTH, REGION_HEIGHT)
 
 class FPSOverlay(QWidget):
     def __init__(self):
         super().__init__()
-        # Window setup that only needs to happen once
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
-        # Position tracking
-        self.position_timer = QTimer(self)
-        self.position_timer.timeout.connect(self.update_position)
-        self.position_timer.start(500)  # Check position every 500ms
+        # Create update thread for position
+        self.update_thread = UpdateThread(self)
+        self.update_thread.start()
         
-        # FPS display setup
         self.fps = 0.0
         self.gradient_offset = 0
         self.gradient_timer = QTimer(self)
         self.gradient_timer.timeout.connect(self.update_gradient)
         self.gradient_timer.start(50)
-        
-        # Initial position update
         self.update_position()
 
     def update_position(self):
-        """Update window position from current config"""
         visual_config = settings_manager.config.get("Visual", {})
         new_x = int(visual_config.get("fps_x", 604.0))
         new_y = int(visual_config.get("fps_y", 503.0))
-        
-        # Only move if position changed
         if (self.x(), self.y()) != (new_x, new_y):
             self.move(new_x, new_y)
 
     def paintEvent(self, event):
         if not settings_manager.config.get("Visual", {}).get("fps", True):
             return
-
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         self.draw_fps(painter)
@@ -123,7 +151,6 @@ class FPSOverlay(QWidget):
         self.fps = float(fps)
         self.update()
 
-
 class DetectionOverlay(QWidget):
     def __init__(self):
         super().__init__()
@@ -136,11 +163,8 @@ class DetectionOverlay(QWidget):
     def paintEvent(self, event):
         if not settings_manager.config.get("Visual", {}).get("target", False):
             return
-
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        # Draw circles
         painter.setPen(QPen(QColor(Colors.AIM_INDICATOR), 7))
         for pos in self.circle_positions:
             painter.drawEllipse(QPointF(pos[0], pos[1]), 5, 5)
@@ -148,7 +172,6 @@ class DetectionOverlay(QWidget):
     def update_circles(self, positions):
         self.circle_positions = positions
         self.update()
-
 
 def update_multiplier():
     global multiplier
@@ -164,20 +187,24 @@ def update_multiplier():
     elif win32api.GetKeyState(0x32) >= 0:
         key_states[0x32] = False
 
+def frame_producer(camera, frame_buffer):
+    while True:
+        frame = camera.get_latest_frame()
+        if frame is not None:
+            frame_buffer.put_frame(frame)
+        time.sleep(0.001)  # Small sleep to prevent CPU thrashing
 
 def main():
-    global detectionOverlay, multiplier
-
     app = QApplication([])
     detection_overlay = DetectionOverlay()
     fps_overlay = FPSOverlay()
-    fov_overlay = FOVOverlay()  # <-- ADD THIS
+    fov_overlay = FOVOverlay()
     detection_overlay.show()
     fps_overlay.show()
-    fov_overlay.show()  # <-- ADD THIS
+    fov_overlay.show()
 
-    # Mouse movement setup
-    mouse_movement_queue = Queue(maxsize=2)
+    # Mouse movement setup with larger queue
+    mouse_movement_queue = Queue(maxsize=4)
 
     def mouse_movement_worker():
         mouse = MouseMover(
@@ -194,8 +221,6 @@ def main():
                         (last_position is None or position != last_position)):
                     mouse.set_mouse_position(*position)
                     last_position = position
-                while not mouse_movement_queue.empty():
-                    mouse_movement_queue.get_nowait()
             except Empty:
                 continue
             except Exception as e:
@@ -208,32 +233,22 @@ def main():
         detector = FastObjectDetector(engine_path='assets/models/' + settings_manager.get("AI.model", "csgo2_best.engine"))
         region = (LEFT, TOP, RIGHT, BOTTOM)
         camera = bettercam.create(output_idx=0, output_color="BGRA", region=region)
-        camera.start(target_fps=200, video_mode=True)
+        camera.start(target_fps=220, video_mode=True)
 
-        # Frame producer-consumer setup
-        frame_queue = Queue(maxsize=1)
+        # Initialize frame buffer with size 3
+        frame_buffer = FrameRingBuffer(buffer_size=3)
 
-        def frame_producer():
-            while True:
-                frame = camera.get_latest_frame()
-                if frame is not None:
-                    try:
-                        if frame_queue.full():
-                            frame_queue.get_nowait()
-                        frame_queue.put_nowait(frame)
-                    except (Empty, Full):
-                        pass
-
-        producer_thread = threading.Thread(target=frame_producer, daemon=True)
+        # Start frame producer thread
+        producer_thread = threading.Thread(target=frame_producer, args=(camera, frame_buffer), daemon=True)
         producer_thread.start()
 
         frame_count = 0
         last_fps_time = time.time()
+        update_gui_counter = 0  # Counter for GUI updates
 
         while True:
-            try:
-                frame = frame_queue.get(timeout=0.001)
-            except Empty:
+            frame = frame_buffer.get_latest_frame()
+            if frame is None:
                 continue
 
             current_time = time.time()
@@ -256,7 +271,7 @@ def main():
                     box_center_x = (x1 + x2) / 2
                     box_center_y = (y1 + y2) / 2
                     distance_sq = (box_center_x - region_center_x_norm) ** 2 + (
-                                box_center_y - region_center_y_norm) ** 2
+                            box_center_y - region_center_y_norm) ** 2
                     if distance_sq < min_distance_sq:
                         min_distance_sq = distance_sq
                         closest_box = box
@@ -282,25 +297,30 @@ def main():
 
                     circle_positions.append((circle_x, circle_y))
 
-            detection_overlay.update_circles(circle_positions)
+            # Update GUI less frequently (every 2 frames)
+            update_gui_counter += 1
+            if update_gui_counter >= 2:
+                detection_overlay.update_circles(circle_positions)
+                update_gui_counter = 0
 
             # FPS counter
             frame_count += 1
             elapsed_time = current_time - last_fps_time
-            if elapsed_time >= 1.0:
+            if elapsed_time >= 0.5:  # Update FPS every 500ms instead of every second
                 fps = frame_count / elapsed_time
                 fps_overlay.update_fps(fps)
                 frame_count = 0
                 last_fps_time = current_time
 
-            app.processEvents()
+            # Process Qt events in batches
+            if update_gui_counter == 0:
+                app.processEvents()
 
     except KeyboardInterrupt:
         print("\nStopping gracefully...")
     finally:
         camera.stop()
         del camera
-
 
 if __name__ == "__main__":
     main()

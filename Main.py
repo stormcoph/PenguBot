@@ -204,7 +204,7 @@ def main():
     fov_overlay.show()
 
     # Mouse movement setup with larger queue
-    mouse_movement_queue = Queue(maxsize=4)
+    mouse_movement_queue = Queue(maxsize=1)
 
     def mouse_movement_worker():
         mouse = MouseMover(

@@ -1,7 +1,7 @@
 # mouse_mover.py
 import serial
 import serial.tools.list_ports
-from win32api import GetSystemMetrics, GetKeyState
+from win32api import GetSystemMetrics, GetAsyncKeyState
 import threading
 import time
 
@@ -18,7 +18,8 @@ class MouseMover:
     _serial_port_lock = threading.Lock()
     _serial_port_opened = False
 
-    def __init__(self, smoothing="linear", get_speed=lambda: 1, easing_strength=1.0, control_strength=1.0):
+    # UPDATED: Added get_trigger_key parameter
+    def __init__(self, smoothing="linear", get_speed=lambda: 1, get_trigger_key=lambda: 0x02, easing_strength=1.0, control_strength=1.0):
         print(
             f"__init__ called: smoothing={smoothing}, "
             f"easing_strength={easing_strength}, control_strength={control_strength}")
@@ -34,7 +35,8 @@ class MouseMover:
         print(f"Screen center: ({self.center_x}, {self.center_y})")
 
         self.smoothing = smoothing
-        self.get_speed = get_speed  # Store the speed getter function
+        self.get_speed = get_speed
+        self.get_trigger_key = get_trigger_key # UPDATED: Store the key getter
         self.easing_strength = easing_strength
         self.control_strength = max(0.0, min(1.0, control_strength))
 
@@ -134,8 +136,12 @@ class MouseMover:
 
     def _update_mouse_position(self):
         """Update mouse position based on current target"""
-        # Check if right mouse button is released
-        if self.stop_move_flag or GetKeyState(0x02) >= 0:
+        
+        # UPDATED: Check the dynamic trigger key instead of hardcoded 0x02
+        current_trigger_key = self.get_trigger_key()
+        is_key_held = (GetAsyncKeyState(current_trigger_key) & 0x8000) != 0
+
+        if self.stop_move_flag or not is_key_held:
             return False
 
         target_x, target_y = self._constrain_to_screen(self.target_x, self.target_y)

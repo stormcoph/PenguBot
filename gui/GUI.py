@@ -1,28 +1,34 @@
 import ctypes
 import sys
 import math
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget)
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QRadialGradient, QIcon, QLinearGradient
-from PyQt5.QtCore import Qt, QTimer, QPoint, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty
+import os
+
+# Consolidate PyQt5 imports
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QGraphicsOpacityEffect)
+from PyQt5.QtGui import (QColor, QPainter, QPainterPath, QRadialGradient, QIcon,
+                         QLinearGradient, QFontDatabase, QFont)
+from PyQt5.QtCore import (Qt, QTimer, QPoint, QRectF, QPropertyAnimation, QEasingCurve,
+                          pyqtProperty, pyqtSlot, QSequentialAnimationGroup, QParallelAnimationGroup)
 
 from .ConfigManager import ConfigManager
-from gui.widgets.colors import Colors
-from .snowflake import Snowflake
+# Import the theme manager function from the correct path
+from .widgets.colors import get_theme_manager
 from .iconbutton import IconButton
-from PyQt5.QtGui import QFontDatabase, QFont
 from .widgets.Aimbot import AimbotWidget
 from .widgets.AI import AIWidget
 from .widgets.Visual import VisualWidget
 from .widgets.Config import ConfigWidget
-import os
+from .effects import SnowEffect, RainEffect, MatrixEffect, ParticlesEffect, StarfieldEffect, GradientWaveEffect
 
 
-class SnowWidget(QWidget):
+class EffectsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.config_manager = ConfigManager()  # Keep this line
+        self.config_manager = ConfigManager()
+        # Initialize Theme Manager with Config Manager *before* creating widgets that might use it
+        self.theme_manager = get_theme_manager(self.config_manager)
 
-        # First (correct) widgets initialization
+        # Now initialize widgets (they can safely call get_theme_manager())
         self.widgets = {
             'aimbot_setting': AimbotWidget(self, self.config_manager),
             'AI_setting': AIWidget(self, self.config_manager),
@@ -31,23 +37,50 @@ class SnowWidget(QWidget):
         }
 
         self._text_opacity = 1.0
+        
+        # Get initial effect setting
+        self.current_effect_name = self.config_manager.get("Visual.background_effect", "Snow")
+        # Handle legacy boolean setting if present
+        if self.config_manager.get("Visual.snow_effect", True) is False and self.current_effect_name == "Snow":
+             self.current_effect_name = "None"
+             
+        print(f"Initial effect setting: {self.current_effect_name}")
 
-        # Create the pulsing animation
-        self.text_animation = QPropertyAnimation(self, b"textOpacity")
-        self.text_animation.setDuration(3000)  # 1.5 seconds for one pulse cycle
-        self.text_animation.setStartValue(1.0)
-        self.text_animation.setEndValue(0.5)
-        self.text_animation.setLoopCount(-1)  # Infinite loop
-        self.text_animation.setEasingCurve(QEasingCurve.InOutSine)
+        self.effect_classes = {
+            "Snow": SnowEffect,
+            "Rain": RainEffect,
+            "Matrix": MatrixEffect,
+            "Particles": ParticlesEffect,
+            "Starfield": StarfieldEffect,
+            "Gradient Wave": GradientWaveEffect
+        }
+        self.current_effect = None
+        self.initialize_effect(self.current_effect_name)
 
-        # Make it bounce back and forth
-        self.text_animation.finished.connect(self._reverse_animation)
+        # --- Create the pulsing animation using QSequentialAnimationGroup ---
+        self.text_anim_group = QSequentialAnimationGroup(self)
+        self.text_anim_group.setLoopCount(-1) # Loop indefinitely
 
-        # Start the animation
-        self.text_animation.start()
+        # Animation part 1: Fade out
+        anim_out = QPropertyAnimation(self, b"textOpacity", self)
+        anim_out.setDuration(1500) # Half of the original duration
+        anim_out.setStartValue(1.0)
+        anim_out.setEndValue(0.5)
+        anim_out.setEasingCurve(QEasingCurve.InOutSine)
+        self.text_anim_group.addAnimation(anim_out)
 
-        self.snow_count = 75
-        self.snowflakes = []
+        # Animation part 2: Fade in
+        anim_in = QPropertyAnimation(self, b"textOpacity", self)
+        anim_in.setDuration(1500) # Half of the original duration
+        anim_in.setStartValue(0.5)
+        anim_in.setEndValue(1.0)
+        anim_in.setEasingCurve(QEasingCurve.InOutSine)
+        self.text_anim_group.addAnimation(anim_in)
+
+        # Start the animation group
+        self.text_anim_group.start()
+        # --- End of animation setup ---
+
         self.buttons = {}
 
         self.setMouseTracking(True)
@@ -57,21 +90,15 @@ class SnowWidget(QWidget):
         self.setup_buttons()
 
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_snowflakes)
+        self.timer.timeout.connect(self.update_effects)
         self.timer.start(16)
 
-        # Add AimbotWidget
-        """self.aimbot_widget = AimbotWidget(self)
-        self.aimbot_widget.move(14+72, 0)  # Position the widget at (123, 42)
-        self.aimbot_widget.resize(200, 50)  # Ensure the widget is large enough
-        self.aimbot_widget.setVisible(False)  # Initially hidden
-        self.aimbot_widget.setEnabled(False)"""  # Initially non-interactive
-
-    def _reverse_animation(self):
-        # Reverse the animation direction
-        self.text_animation.setStartValue(self.text_animation.endValue())
-        self.text_animation.setEndValue(1.0 if self.text_animation.endValue() == 0.5 else 0.5)
-        self.text_animation.start()
+        # Connect theme changed signal to update styles
+        self.theme_manager.themeChanged.connect(self.update_widget_styles)
+        
+        # Connect signal from VisualWidget for immediate effect updates
+        self.widgets['visual_setting'].effectChanged.connect(self.set_effect)
+        
 
     # Property for text opacity animation
     def get_text_opacity(self):
@@ -83,42 +110,39 @@ class SnowWidget(QWidget):
 
     textOpacity = pyqtProperty(float, get_text_opacity, set_text_opacity)
 
-    def update_snowflakes(self):
+    def set_effect(self, effect_name):
+        """Switch background effect immediately"""
+        print(f"Effect switched to: {effect_name}")
+        if effect_name == self.current_effect_name:
+            return  # No change needed
+        
+        self.current_effect_name = effect_name
+        self.initialize_effect(effect_name)
+        self.update()
+
+    def initialize_effect(self, effect_name):
+        if effect_name in self.effect_classes:
+            try:
+                self.current_effect = self.effect_classes[effect_name](self.width(), self.height(), self.theme_manager)
+            except Exception as e:
+                print(f"Error initializing effect {effect_name}: {e}")
+                self.current_effect = None
+        else:
+            self.current_effect = None
+
+    def update_effects(self):
         try:
-            if self.snowflakes:
-                for snowflake in self.snowflakes:
-                    dx = self.mouse_pos.x() - snowflake.pos.x()
-                    dy = self.mouse_pos.y() - snowflake.pos.y()
-                    distance = math.sqrt(dx * dx + dy * dy)
-
-                    if distance < self.mouse_radius and distance > 0:
-                        factor = (self.mouse_radius - distance) / self.mouse_radius
-                        new_x = snowflake.pos.x() - dx * factor * 0.1
-                        new_y = snowflake.pos.y() - dy * factor * 0.1
-
-                        if 0 <= new_x <= self.width():
-                            snowflake.pos.setX(int(new_x))
-                        if -50 <= new_y <= self.height():
-                            snowflake.pos.setY(int(new_y))
-
-                    snowflake.update(self.width(), self.height())
-                self.update()
+            if self.current_effect:
+                self.current_effect.update(self.width(), self.height(), self.mouse_pos)
+            self.update()
         except Exception as e:
-            print(f"Error updating snow: {e}")
-
-    def initialize_snowflakes(self):
-        try:
-            if not self.snowflakes:
-                for _ in range(self.snow_count):
-                    self.snowflakes.append(Snowflake(self.width(), self.height()))
-        except Exception as e:
-            print(f"Error initializing snowflakes: {e}")
+            print(f"Error updating effect: {e}")
 
     def resizeEvent(self, event):
         try:
             super().resizeEvent(event)
-            if not self.snowflakes:
-                self.initialize_snowflakes()
+            if self.current_effect:
+                self.current_effect.update(self.width(), self.height())
         except Exception as e:
             print(f"Error in resize event: {e}")
 
@@ -126,18 +150,18 @@ class SnowWidget(QWidget):
         self.mouse_pos = event.pos()
 
     def setup_buttons(self):
-        base_icon_path = os.path.join(os.path.dirname(__file__), "icons")  # Add this line
+        base_icon_path = os.path.join(os.path.dirname(__file__), "icons")
 
         button_configs = {
             'aimbot_setting': {
-                'base': os.path.join(base_icon_path, 'aimbot_setting', 'selected.png'),  # Updated
-                'mask1': os.path.join(base_icon_path, 'aimbot_setting', 'mask1.png'),  # Updated
+                'base': os.path.join(base_icon_path, 'aimbot_setting', 'selected.png'),
+                'mask1': os.path.join(base_icon_path, 'aimbot_setting', 'mask1.png'),
                 'position': (11, 7 + 10)
             },
             'AI_setting': {
-                'base': os.path.join(base_icon_path, 'AI_setting', 'selected.png'),  # Updated
-                'mask1': os.path.join(base_icon_path, 'AI_setting', 'mask1.png'),  # Updated
-                'mask2': os.path.join(base_icon_path, 'AI_setting', 'mask2.png'),  # Updated
+                'base': os.path.join(base_icon_path, 'AI_setting', 'selected.png'),
+                'mask1': os.path.join(base_icon_path, 'AI_setting', 'mask1.png'),
+                'mask2': os.path.join(base_icon_path, 'AI_setting', 'mask2.png'),
                 'position': (11, 7 + 64 + 10 + 9)
             },
             'visual_setting': {
@@ -155,9 +179,7 @@ class SnowWidget(QWidget):
         }
 
         for name, config in button_configs.items():
-            # For single mask buttons (aimbot_setting), mask2 will be None
             mask2_path = config.get('mask2', None)
-
             button = IconButton(
                 config['base'],
                 config['mask1'],
@@ -167,22 +189,51 @@ class SnowWidget(QWidget):
             button.move(*config['position'])
             button.clicked.connect(lambda checked, n=name: self.handle_button_click(n))
             self.buttons[name] = button
+        self.update_button_styles()
 
     def handle_button_click(self, button_name):
-        # Uncheck all other buttons
         for name, button in self.buttons.items():
             if name != button_name:
                 button.setChecked(False)
 
-        # Hide all widgets
         for widget in self.widgets.values():
             widget.setVisible(False)
             widget.setEnabled(False)
 
-        # Show the selected widget
         if button_name in self.widgets:
-            self.widgets[button_name].setVisible(True)
-            self.widgets[button_name].setEnabled(True)
+            target_widget = self.widgets[button_name]
+            target_widget.setVisible(True)
+            target_widget.setEnabled(True)
+            if hasattr(target_widget, '_update_styles'):
+                target_widget._update_styles()
+            
+            # Entry Animation
+            # 1. Opacity Fade-In
+            opacity_effect = QGraphicsOpacityEffect(target_widget)
+            target_widget.setGraphicsEffect(opacity_effect)
+            
+            anim_opacity = QPropertyAnimation(opacity_effect, b"opacity")
+            anim_opacity.setDuration(300)
+            anim_opacity.setStartValue(0.0)
+            anim_opacity.setEndValue(1.0)
+            anim_opacity.setEasingCurve(QEasingCurve.OutCubic)
+            
+            # 2. Slide Up (Geometry)
+            # We need to keep the original position, so let's get it
+            original_pos = QPoint(86, 7) # Hardcoded based on init, or we could read it
+            start_pos = QPoint(86, 27) # Start slightly lower
+            
+            anim_pos = QPropertyAnimation(target_widget, b"pos")
+            anim_pos.setDuration(300)
+            anim_pos.setStartValue(start_pos)
+            anim_pos.setEndValue(original_pos)
+            anim_pos.setEasingCurve(QEasingCurve.OutCubic)
+            
+            # Group animations
+            self.entry_anim_group = QParallelAnimationGroup(self)
+            self.entry_anim_group.addAnimation(anim_opacity)
+            self.entry_anim_group.addAnimation(anim_pos)
+            self.entry_anim_group.start()
 
         print(f"Button clicked: {button_name}")
 
@@ -193,49 +244,19 @@ class SnowWidget(QWidget):
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
             gradient = QLinearGradient(0, 0, 0, self.height())
-            gradient.setColorAt(0, QColor(Colors.BACKGROUND))
-            gradient.setColorAt(1, Colors.BACKGROUND_DARKER)
+            gradient.setColorAt(0, self.theme_manager.get_color("BACKGROUND"))
+            gradient.setColorAt(1, self.theme_manager.get_color("BACKGROUND_DARKER"))
 
             path = QPainterPath()
             path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 15, 15)
             painter.setClipPath(path)
             painter.fillPath(path, gradient)
 
-            if self.snowflakes:
-                for snowflake in self.snowflakes:
-                    if not isinstance(snowflake.pos, QPoint):
-                        continue
+            # Draw current effect
+            if self.current_effect:
+                self.current_effect.draw(painter)
 
-                    dx = self.mouse_pos.x() - snowflake.pos.x()
-                    dy = self.mouse_pos.y() - snowflake.pos.y()
-                    distance = math.sqrt(dx * dx + dy * dy)
-
-                    glow_radius = snowflake.size * 2
-                    if distance < self.mouse_radius:
-                        glow_factor = (self.mouse_radius - distance) / self.mouse_radius
-                        glow_radius = snowflake.size * (2 + glow_factor * 2)
-
-                    gradient = QRadialGradient(snowflake.pos, glow_radius)
-                    base_color = Colors.SNOWFLAKE
-                    color = QColor(base_color.red(), base_color.green(), base_color.blue(),
-                                   int(255 * snowflake.opacity))
-
-                    if distance < self.mouse_radius:
-                        glow_color = QColor(200, 225, 255, int(255 * snowflake.opacity * glow_factor * 0.5))
-                        gradient.setColorAt(0, color)
-                        gradient.setColorAt(0.5, glow_color)
-                        gradient.setColorAt(1, QColor(0, 0, 0, 0))
-                    else:
-                        gradient.setColorAt(0, color)
-                        gradient.setColorAt(1, QColor(0, 0, 0, 0))
-
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(gradient)
-
-                    size = max(0.1, snowflake.size * snowflake.depth)
-                    painter.drawEllipse(snowflake.pos, size, size)
-
-            panel_color = Colors.PANEL_BACKGROUND
+            panel_color = self.theme_manager.get_color("PANEL_BACKGROUND")
             rectColor = QColor(panel_color.red(), panel_color.green(), panel_color.blue())
             rectColor.setAlphaF(0.92)
 
@@ -251,7 +272,7 @@ class SnowWidget(QWidget):
             font.setWeight(QFont.Medium)
             painter.setFont(font)
             font.setPointSize(12)
-            text_color = Colors.TEXT
+            text_color = self.theme_manager.get_color("TEXT")
             text_color_with_opacity = QColor(text_color.red(), text_color.green(), text_color.blue())
             text_color_with_opacity.setAlphaF(self._text_opacity)
             painter.setPen(text_color_with_opacity)
@@ -261,6 +282,24 @@ class SnowWidget(QWidget):
 
         except Exception as e:
             print(f"Error in paint event: {e}")
+
+    @pyqtSlot()
+    def update_widget_styles(self):
+        """Update styles of child widgets when theme changes."""
+        print("EffectsWidget updating styles...") # Debug print
+        self.update_button_styles()
+
+        for widget in self.widgets.values():
+            if hasattr(widget, '_update_styles'):
+                 widget._update_styles()
+
+        self.update()
+
+    def update_button_styles(self):
+         """Updates the theme colors for all icon buttons."""
+         for button in self.buttons.values():
+             if hasattr(button, 'update_theme_colors'):
+                 button.update_theme_colors()
 
 
 def load_fonts():
@@ -305,7 +344,7 @@ class MainWindow(QMainWindow):
         default_font.setStyleStrategy(QFont.PreferAntialias)
         QApplication.setFont(default_font)
 
-        self.central_widget = SnowWidget(self)
+        self.central_widget = EffectsWidget(self)
         self.central_widget.resize(700, 440)
         self.setCentralWidget(self.central_widget)
 
@@ -315,6 +354,6 @@ if __name__ == '__main__':
     window = MainWindow()
     myappid = 'mycompany.myproduct.subproduct.version'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-    app.setWindowIcon(QIcon("icons/config_setting/icon.ico"))
+    app.setWindowIcon(QIcon("icons/config_setting/icon.ico")) # Consider making icon path relative/themed
     window.show()
     sys.exit(app.exec_())

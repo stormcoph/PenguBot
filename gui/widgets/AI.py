@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PyQt5.QtGui import QPainter
-from gui.widgets.colors import Colors
+from .colors import get_theme_manager # Use theme manager
 from gui.widgets.Settings import (SettingsDropdown, SettingsSlider, SettingsBoolean,
                                 ScrollableSettingsWidget)
 import glob
@@ -10,6 +10,7 @@ import os
 class AIWidget(QWidget):
     def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)
+        self.theme_manager = get_theme_manager() # Get theme manager instance
         self.config_manager = config_manager
         self.setVisible(False)
         self.move(86, 7)
@@ -22,11 +23,12 @@ class AIWidget(QWidget):
         self.layout.setContentsMargins(20, 20, 20, 20)
         self.layout.setSpacing(0)
 
-        title = QLabel("AI Configuration")
-        title.setStyleSheet(f"color: {Colors.TEXT.name()}; font-family: Roboto; font-size: 24px; font-weight: bold;")
-        self.layout.addWidget(title)
+        self.title = QLabel("AI Configuration") # Store as instance variable
+        self._update_title_style() # Apply initial style
+        self.layout.addWidget(self.title)
 
         scroll_area = ScrollableSettingsWidget(self)
+        # ScrollableSettingsWidget now handles its own theme updates
         container = QWidget()
         container_layout = QVBoxLayout(container)
         container_layout.setSpacing(8)
@@ -54,14 +56,38 @@ class AIWidget(QWidget):
         model_dropdown = SettingsDropdown("Model", model_filenames)
         container_layout.addWidget(model_dropdown)
         self.config_manager.register_setting("AI", "model", model_dropdown)
+
+        max_fps_capture = SettingsSlider("Max FPS Capture", 1, 200, 80, allow_decimals=False)
+        container_layout.addWidget(max_fps_capture)
+        self.config_manager.register_setting("AI", "max_fps_capture", max_fps_capture)
         container_layout.addStretch()
 
         scroll_area.setWidget(container)
         self.layout.addWidget(scroll_area)
 
     def setup_connections(self):
+        # Connect theme manager signal to update styles
+        self.theme_manager.themeChanged.connect(self._update_styles)
         pass
+
+    def _update_title_style(self):
+        """Updates the style of the title label."""
+        if hasattr(self, 'title'): # Check if title exists
+            self.title.setStyleSheet(f"color: {self.theme_manager.get_color('TEXT').name()}; font-family: Roboto; font-size: 24px; font-weight: bold;")
+
+    def _update_styles(self):
+        """Update styles for this widget when the theme changes."""
+        print("AIWidget updating styles...") # Debug print
+        self._update_title_style()
+        # Child settings widgets update themselves
+        # Find the ScrollableSettingsWidget and tell it to update its scrollbar style
+        scroll_area = self.findChild(ScrollableSettingsWidget)
+        if scroll_area and hasattr(scroll_area, 'update_styles'):
+            scroll_area.update_styles()
+        self.update() # Trigger repaint if needed
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        # Add any custom painting code here if needed, using self.theme_manager
+        pass

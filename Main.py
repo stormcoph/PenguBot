@@ -3,7 +3,7 @@ import bettercam
 import cv2
 from win32api import GetSystemMetrics
 from ObjectDetector import FastObjectDetector
-from gui.widgets.colors import Colors
+from gui.widgets.colors import theme_manager # Import theme_manager instead of Colors
 from mouse_mover import MouseMover
 import win32api
 import math
@@ -19,6 +19,10 @@ import numpy as np
 
 # Initialize config manager at module level
 settings_manager = ConfigManager()
+# Ensure theme manager loads theme from config *before* widgets are created
+from gui.widgets.colors import get_theme_manager
+get_theme_manager(settings_manager)
+
 
 # Screen dimensions
 REGION_WIDTH = 500
@@ -39,7 +43,7 @@ class UpdateThread(QThread):
     def __init__(self, widget):
         super().__init__()
         self.widget = widget
-        
+
     def run(self):
         while True:
             self.widget.update_position()
@@ -84,13 +88,14 @@ class FOVOverlay(QWidget):
         self.setGeometry(LEFT, TOP, REGION_WIDTH, REGION_HEIGHT)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        theme_manager.themeChanged.connect(self.update) # Update on theme change
 
     def paintEvent(self, event):
         if not settings_manager.config.get("Visual", {}).get("fov", True):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        border_color = QColor(Colors.PRIMARY)
+        border_color = theme_manager.get_color("PRIMARY") # Use theme_manager
         border_color.setAlpha(80)
         painter.setPen(QPen(border_color, 1))
         painter.drawRect(0, 0, REGION_WIDTH, REGION_HEIGHT)
@@ -100,17 +105,19 @@ class FPSOverlay(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        
+
         # Create update thread for position
         self.update_thread = UpdateThread(self)
         self.update_thread.start()
-        
+
         self.fps = 0.0
+        # Re-introduce gradient attributes and timer
         self.gradient_offset = 0
         self.gradient_timer = QTimer(self)
         self.gradient_timer.timeout.connect(self.update_gradient)
-        self.gradient_timer.start(50)
+        self.gradient_timer.start(50) # Animation speed
         self.update_position()
+        theme_manager.themeChanged.connect(self.update) # Update on theme change
 
     def update_position(self):
         visual_config = settings_manager.config.get("Visual", {})
@@ -127,24 +134,29 @@ class FPSOverlay(QWidget):
         self.draw_fps(painter)
 
     def draw_fps(self, painter):
-        gradient = QLinearGradient(QPointF(0, 0), QPointF(200, 0))
-        gradient.setColorAt(0, QColor(Colors.FPS_GRADIENT_START))
-        gradient.setColorAt(0.5, QColor(Colors.FPS_GRADIENT_MIDDLE))
-        gradient.setColorAt(1, QColor(Colors.FPS_GRADIENT_END))
+        # Re-introduce gradient using PRIMARY and ACCENT colors
+        gradient = QLinearGradient(QPointF(0, 0), QPointF(200, 0)) # Adjust size as needed
+        gradient.setColorAt(0, theme_manager.get_color("PRIMARY"))
+        gradient.setColorAt(0.5, theme_manager.get_color("ACCENT"))
+        gradient.setColorAt(1, theme_manager.get_color("PRIMARY"))
         gradient.setSpread(QLinearGradient.ReflectSpread)
         gradient.setStart(QPointF(self.gradient_offset, 0))
-        gradient.setFinalStop(QPointF(self.gradient_offset + 200, 0))
+        gradient.setFinalStop(QPointF(self.gradient_offset + 200, 0)) # Match size
 
-        font = QFont("Arial", 16, QFont.Bold)
+        font = QFont("Arial", 16, QFont.Bold) # Consider theming the font later if needed
         painter.setFont(font)
         fps_text = f"FPS: {self.fps:.1f}"
-        text_x = REGION_WIDTH - 120
+        text_x = REGION_WIDTH - 120 # Position might need adjustment depending on theme/font
         text_y = 16
-        painter.setPen(QPen(gradient, 2))
+
+        # Set the pen to use the animated gradient
+        painter.setPen(QPen(gradient, 2)) # Use gradient, adjust thickness if needed
         painter.drawText(text_x, text_y, fps_text)
 
+
+    # Re-introduce update_gradient method
     def update_gradient(self):
-        self.gradient_offset = (self.gradient_offset + 5) % 200
+        self.gradient_offset = (self.gradient_offset + 5) % 200 # Match gradient size
         self.update()
 
     def update_fps(self, fps):
@@ -159,13 +171,15 @@ class DetectionOverlay(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.circle_positions = []
+        theme_manager.themeChanged.connect(self.update) # Update on theme change
 
     def paintEvent(self, event):
         if not settings_manager.config.get("Visual", {}).get("target", False):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(Colors.AIM_INDICATOR), 7))
+        # Use theme_manager.get_color() which returns a QColor
+        painter.setPen(QPen(theme_manager.get_color("AIM_INDICATOR"), 7))
         for pos in self.circle_positions:
             painter.drawEllipse(QPointF(pos[0], pos[1]), 5, 5)
 
@@ -173,19 +187,81 @@ class DetectionOverlay(QWidget):
         self.circle_positions = positions
         self.update()
 
-def update_multiplier():
+
+key_states = {
+    0x31: False,  # Key '1'
+    0x32: False,  # Key '2'
+}
+
+# Variables for smooth aim height adjustment
+left_click_held = False
+original_multiplier = None
+
+# Create a function to update settings when config changes
+def update_settings_from_config():
     global multiplier
-    if win32api.GetKeyState(0x31) < 0 and not key_states[0x31]:
-        multiplier = settings_manager.get("Aimbot.target_height_1", 0.18)
+    # If we're not in midst of adjustment, update multiplier to current setting
+    if not left_click_held or original_multiplier is None:
+        if win32api.GetAsyncKeyState(0x31) < 0:
+            multiplier = settings_manager.get("Aimbot.target_height_1", 0.18)
+        elif win32api.GetAsyncKeyState(0x32) < 0:
+            multiplier = settings_manager.get("Aimbot.target_height_2", 0.11)
+
+
+# Register the observer with the settings manager to be notified of changes
+settings_manager.register_observer(update_settings_from_config)
+
+
+def update_multiplier():
+    global multiplier, left_click_held, original_multiplier
+
+    target_height_1 = settings_manager.get("Aimbot.target_height_1", 0.18)
+    target_height_2 = settings_manager.get("Aimbot.target_height_2", 0.11)
+    base_height_increment = settings_manager.get("Aimbot.recoil", 0.03)
+
+    if win32api.GetAsyncKeyState(0x31) < 0 and not key_states[0x31]:
+        multiplier = target_height_1
         key_states[0x31] = True
-    elif win32api.GetKeyState(0x31) >= 0:
+    elif win32api.GetAsyncKeyState(0x31) >= 0:
         key_states[0x31] = False
 
-    if win32api.GetKeyState(0x32) < 0 and not key_states[0x32]:
-        multiplier = settings_manager.get("Aimbot.target_height_2", 0.11)
+    if win32api.GetAsyncKeyState(0x32) < 0 and not key_states[0x32]:
+        multiplier = target_height_2
         key_states[0x32] = True
-    elif win32api.GetKeyState(0x32) >= 0:
+    elif win32api.GetAsyncKeyState(0x32) >= 0:
         key_states[0x32] = False
+
+    trigger_key = settings_manager.get("Aimbot.trigger_key", 0x05)
+    # Debug print to verify key and state
+    # print(f"Trigger Key: {trigger_key}, State: {win32api.GetAsyncKeyState(trigger_key)}")
+    
+    right_click_held = (win32api.GetAsyncKeyState(trigger_key) & 0x8000) != 0
+    left_click_current = (win32api.GetAsyncKeyState(0x01) & 0x8000) != 0
+
+    if not right_click_held:
+        if left_click_held and original_multiplier is not None:
+            multiplier = original_multiplier
+            original_multiplier = None
+        left_click_held = False
+        return
+
+    current_speed = settings_manager.get("Aimbot.speed", 0.08)
+
+    height_increment = base_height_increment * current_speed
+
+    if left_click_current:
+        if not left_click_held:
+            left_click_held = True
+            original_multiplier = multiplier
+
+        max_recoil_factor = settings_manager.get("Aimbot.max_recoil", 2.0)
+        max_value = original_multiplier * max_recoil_factor
+        multiplier = min(multiplier + height_increment, max_value)
+
+    elif left_click_held:
+        left_click_held = False
+        multiplier = original_multiplier
+        original_multiplier = None
 
 def frame_producer(camera, frame_buffer):
     while True:
@@ -210,6 +286,8 @@ def main():
         mouse = MouseMover(
             smoothing="linear",
             get_speed=lambda: settings_manager.get("Aimbot.speed", 0.08),
+            # ADD THIS LINE BELOW:
+            get_trigger_key=lambda: settings_manager.get("Aimbot.trigger_key", 0x05),
             easing_strength=3,
             control_strength=0.9
         )
@@ -217,7 +295,8 @@ def main():
         while True:
             try:
                 position = mouse_movement_queue.get(timeout=0.001)
-                if (win32api.GetKeyState(0x02) < 0 and
+                trigger_key = settings_manager.get("Aimbot.trigger_key", 0x05)
+                if ((win32api.GetAsyncKeyState(trigger_key) & 0x8000) != 0 and
                         (last_position is None or position != last_position)):
                     mouse.set_mouse_position(*position)
                     last_position = position
@@ -230,10 +309,26 @@ def main():
     movement_thread.start()
 
     try:
-        detector = FastObjectDetector(engine_path='assets/models/' + settings_manager.get("AI.model", "csgo2_best.engine"))
+        current_model_name = settings_manager.get("AI.model", "csgo2_best.engine")
+        detector = FastObjectDetector(engine_path='assets/models/' + current_model_name)
+        
+        # Model reload state
+        model_reload_state = {
+            "needed": False,
+            "new_model_name": None
+        }
+
+        def check_model_change():
+            new_name = settings_manager.get("AI.model", "csgo2_best.engine")
+            if new_name != current_model_name:
+                model_reload_state["needed"] = True
+                model_reload_state["new_model_name"] = new_name
+
+        settings_manager.register_observer(check_model_change)
+
         region = (LEFT, TOP, RIGHT, BOTTOM)
         camera = bettercam.create(output_idx=0, output_color="BGRA", region=region)
-        camera.start(target_fps=220, video_mode=True)
+        camera.start(target_fps=200, video_mode=True)
 
         # Initialize frame buffer with size 3
         frame_buffer = FrameRingBuffer(buffer_size=3)
@@ -250,6 +345,15 @@ def main():
             frame = frame_buffer.get_latest_frame()
             if frame is None:
                 continue
+            
+            # Check for model reload
+            if model_reload_state["needed"]:
+                new_name = model_reload_state["new_model_name"]
+                if new_name:
+                    print(f"Switching model to {new_name}...")
+                    if detector.reload('assets/models/' + new_name):
+                        current_model_name = new_name
+                    model_reload_state["needed"] = False
 
             current_time = time.time()
             update_multiplier()
@@ -289,7 +393,8 @@ def main():
                     screen_x = LEFT + circle_x
                     screen_y = TOP + circle_y
 
-                    if win32api.GetKeyState(0x02) < 0:
+                    trigger_key = settings_manager.get("Aimbot.trigger_key", 0x05)
+                    if (win32api.GetAsyncKeyState(trigger_key) & 0x8000) != 0:
                         try:
                             mouse_movement_queue.put_nowait((screen_x, screen_y))
                         except Full:

@@ -1,35 +1,27 @@
 from PyQt5.QtCore import pyqtProperty, QPropertyAnimation, QEasingCurve, Qt
 from PyQt5.QtGui import QPainter, QColor
 from PyQt5.QtWidgets import QPushButton
-from gui.widgets.colors import Colors
+# Import the theme manager function from the correct path
+from .widgets.colors import get_theme_manager
 from gui.icons.MaskManager import MaskManager
 
 
 class IconButton(QPushButton):
     def __init__(self, base_path, mask1_path, mask2_path=None, parent=None):
         super().__init__(parent)
+        self.theme_manager = get_theme_manager() # Get theme manager instance
 
-        # Create MaskManager instances for selected and unselected states
-        self.selected_mask_manager = MaskManager(
-            base_path,
-            mask1_path,
-            mask2_path,
-            width=64,
-            height=64,
-            color1=Colors.SELECTED_ELEMENT_1.name(),  # Use first selected color
-            color2=Colors.SELECTED_ELEMENT_2.name() if mask2_path else None  # Use second selected color if dual mask
-        )
+        # Store paths for later updates
+        self.base_path = base_path
+        self.mask1_path = mask1_path
+        self.mask2_path = mask2_path
 
-        self.unselected_mask_manager = MaskManager(
-            base_path,
-            mask1_path,
-            mask2_path,
-            width=64,
-            height=64,
-            color1=Colors.UNSELECTED_ELEMENT_1.name(),  # Use first unselected color
-            color2=Colors.UNSELECTED_ELEMENT_2.name() if mask2_path else None
-            # Use second unselected color if dual mask
-        )
+        # Create MaskManager instances (colors will be set in update_theme_colors)
+        self.selected_mask_manager = MaskManager(base_path, mask1_path, mask2_path, width=64, height=64)
+        self.unselected_mask_manager = MaskManager(base_path, mask1_path, mask2_path, width=64, height=64)
+
+        # Apply initial theme colors
+        self.update_theme_colors()
 
         self.setCheckable(True)
         self.setFixedSize(64, 64)
@@ -53,6 +45,9 @@ class IconButton(QPushButton):
         self.scale_animation.setEasingCurve(QEasingCurve.InOutBack)
 
         self.toggled.connect(self._handle_toggle)
+
+        # Connect theme changed signal
+        # self.theme_manager.themeChanged.connect(self.update_theme_colors) # Connect in SnowWidget instead
 
         self.setStyleSheet("""
             QPushButton {
@@ -114,6 +109,26 @@ class IconButton(QPushButton):
 
     scale = pyqtProperty(float, get_scale, set_scale)
 
+    def update_theme_colors(self):
+        """Updates the colors used by the MaskManagers based on the current theme."""
+        # Set colors for selected state
+        self.selected_mask_manager.set_color1(self.theme_manager.get_color("SELECTED_ELEMENT_1"))
+        if self.mask2_path:
+            self.selected_mask_manager.set_color2(self.theme_manager.get_color("SELECTED_ELEMENT_2"))
+        else:
+             self.selected_mask_manager.set_color2(None) # Ensure color2 is None if no mask2
+
+        # Set colors for unselected state
+        self.unselected_mask_manager.set_color1(self.theme_manager.get_color("UNSELECTED_ELEMENT_1"))
+        if self.mask2_path:
+            self.unselected_mask_manager.set_color2(self.theme_manager.get_color("UNSELECTED_ELEMENT_2"))
+        else:
+             self.unselected_mask_manager.set_color2(None) # Ensure color2 is None if no mask2
+
+        # The MaskManager's set_color methods already call update_colors internally,
+        # but we call update() on the IconButton itself to ensure it redraws.
+        self.update() # Trigger repaint of the IconButton
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -127,14 +142,18 @@ class IconButton(QPushButton):
         # Draw shadow for hover effect
         if self._hover_opacity > 0:
             painter.setOpacity(self._hover_opacity * 0.3)
-            painter.setBrush(QColor(Colors.BUTTON_SHADOW))
+            # Use themed shadow color (alpha handled here)
+            shadow_color = self.theme_manager.get_color("BUTTON_SHADOW", alpha=50)
+            painter.setBrush(shadow_color)
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 10, 10)
 
         # Draw hover glow
         if self._hover_opacity > 0:
             painter.setOpacity(self._hover_opacity * 0.1)
-            painter.setBrush(QColor(Colors.UI_ELEMENT))
+            # Use themed UI element color for glow
+            glow_color = self.theme_manager.get_color("UI_ELEMENT")
+            painter.setBrush(glow_color)
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(self.rect(), 15, 15)
 

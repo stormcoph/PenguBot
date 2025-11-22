@@ -1,21 +1,81 @@
 {
     "Aimbot": {
         "enabled": true,
-        "fov": 507.0,
-        "target_height_1": 0.171,
-        "target_height_2": 0.1,
-        "speed": 0.08
+        "fov": 500.0,
+        "target_height_1": 0.13,
+        "target_height_2": 0.484,
+        "speed": 0.125,
+        "targeting_mode": "Confidence",
+        "fps": 182.0,
+        "recoil": 0.01,
+        "max_recoil": 1.0,
+        "scout_macro": true,
+        "trigger_key": 5
     },
     "AI": {
-        "confidence": 0.749,
-        "nms_iou_threshold": 0.882,
-        "model": "csgo2_best.engine"
+        "confidence": 0.691,
+        "nms_iou_threshold": 0.489,
+        "model": "arsenal.engine",
+        "max_fps_capture": 30
     },
     "Visual": {
         "fps": true,
         "fov": false,
         "target": false,
         "fps_x": 2029.0,
-        "fps_y": 41.0
+        "fps_y": 38.0,
+        "snow_effect": true,
+        "background_effect": "Neon Noise",
+        "box_esp": true,
+        "box_style": "Corners",
+        "snaplines": true,
+        "info_text": true,
+        "status_panel": true,
+        "recoil_crosshair": true,
+        "radar": true
+    },
+    "Theme": {
+        "active": "Ocean"
+    },
+    "saved_configs": {
+        "medium (ak-47)": {
+            "description": "",
+            "config": {
+                "Aimbot": {
+                    "enabled": true,
+                    "fov": 497.0,
+                    "target_height_1": 0.234,
+                    "target_height_2": 0.138,
+                    "speed": 0.072,
+                    "targeting_mode": "Confidence",
+                    "fps": 182.0,
+                    "recoil": 0.523,
+                    "max_recoil": 4.891
+                },
+                "AI": {
+                    "confidence": 0.801,
+                    "nms_iou_threshold": 0.489,
+                    "model": "csgo2_best.engine",
+                    "max_fps_capture": 30
+                },
+                "Visual": {
+                    "fps": true,
+                    "fov": false,
+                    "target": false,
+                    "fps_x": 2029.0,
+                    "fps_y": 38.0
+                },
+                "Theme": {
+                    "active": "Ocean"
+                }
+            }
+        }
+    },
+    "Triggerbot": {
+        "enabled": false,
+        "delay": 100.0,
+        "confidence": 0.8,
+        "mode": "Any Target",
+        "hold_time": 53.0
     }
 }

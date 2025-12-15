@@ -1,6 +1,10 @@
 import time
+import time
 import bettercam
 import cv2
+import cv2
+from render.inference_fps import FPSOverlay
+from render.capture import ScreenCapture
 from win32api import GetSystemMetrics
 from ObjectDetector import FastObjectDetector
 from gui.widgets.colors import theme_manager # Import theme_manager instead of Colors
@@ -8,8 +12,8 @@ from mouse_mover import MouseMover
 import win32api
 import math
 from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtGui import QPainter, QColor, QPen, QLinearGradient, QFont, QBrush
-from PyQt5.QtCore import Qt, QTimer, QPointF, QThread
+from PyQt5.QtGui import QPainter, QPen
+from PyQt5.QtCore import Qt, QPointF
 import threading
 from queue import Queue, Empty, Full
 import json
@@ -39,15 +43,8 @@ key_states = {
     0x32: False,  # Key '2'
 }
 
-class UpdateThread(QThread):
-    def __init__(self, widget):
-        super().__init__()
-        self.widget = widget
+# UpdateThread and associated classes moved to render.inference_fps
 
-    def run(self):
-        while True:
-            self.widget.update_position()
-            time.sleep(0.5)  # 500ms interval
 
 class FrameRingBuffer:
     def __init__(self, buffer_size=3, frame_shape=None):
@@ -77,9 +74,10 @@ class FrameRingBuffer:
     def get_latest_frame(self):
         with self._lock:
             if self.write_idx == self.read_idx:
-                return None
+                return None, -1
             prev_write = (self.write_idx - 1) % self.size
-            return self.buffer[prev_write].copy()
+            # Return frame AND the processed count as a sequence ID
+            return self.buffer[prev_write].copy(), self.frames_processed
 
 class FOVOverlay(QWidget):
     def __init__(self):
@@ -100,68 +98,8 @@ class FOVOverlay(QWidget):
         painter.setPen(QPen(border_color, 1))
         painter.drawRect(0, 0, REGION_WIDTH, REGION_HEIGHT)
 
-class FPSOverlay(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+# FPSOverlay moved to render.inference_fps
 
-        # Create update thread for position
-        self.update_thread = UpdateThread(self)
-        self.update_thread.start()
-
-        self.fps = 0.0
-        # Re-introduce gradient attributes and timer
-        self.gradient_offset = 0
-        self.gradient_timer = QTimer(self)
-        self.gradient_timer.timeout.connect(self.update_gradient)
-        self.gradient_timer.start(50) # Animation speed
-        self.update_position()
-        theme_manager.themeChanged.connect(self.update) # Update on theme change
-
-    def update_position(self):
-        visual_config = settings_manager.config.get("Visual", {})
-        new_x = int(visual_config.get("fps_x", 604.0))
-        new_y = int(visual_config.get("fps_y", 503.0))
-        if (self.x(), self.y()) != (new_x, new_y):
-            self.move(new_x, new_y)
-
-    def paintEvent(self, event):
-        if not settings_manager.config.get("Visual", {}).get("fps", True):
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        self.draw_fps(painter)
-
-    def draw_fps(self, painter):
-        # Re-introduce gradient using PRIMARY and ACCENT colors
-        gradient = QLinearGradient(QPointF(0, 0), QPointF(200, 0)) # Adjust size as needed
-        gradient.setColorAt(0, theme_manager.get_color("PRIMARY"))
-        gradient.setColorAt(0.5, theme_manager.get_color("ACCENT"))
-        gradient.setColorAt(1, theme_manager.get_color("PRIMARY"))
-        gradient.setSpread(QLinearGradient.ReflectSpread)
-        gradient.setStart(QPointF(self.gradient_offset, 0))
-        gradient.setFinalStop(QPointF(self.gradient_offset + 200, 0)) # Match size
-
-        font = QFont("Arial", 16, QFont.Bold) # Consider theming the font later if needed
-        painter.setFont(font)
-        fps_text = f"FPS: {self.fps:.1f}"
-        text_x = REGION_WIDTH - 120 # Position might need adjustment depending on theme/font
-        text_y = 16
-
-        # Set the pen to use the animated gradient
-        painter.setPen(QPen(gradient, 2)) # Use gradient, adjust thickness if needed
-        painter.drawText(text_x, text_y, fps_text)
-
-
-    # Re-introduce update_gradient method
-    def update_gradient(self):
-        self.gradient_offset = (self.gradient_offset + 5) % 200 # Match gradient size
-        self.update()
-
-    def update_fps(self, fps):
-        self.fps = float(fps)
-        self.update()
 
 class DetectionOverlay(QWidget):
     def __init__(self):
@@ -263,9 +201,9 @@ def update_multiplier():
         multiplier = original_multiplier
         original_multiplier = None
 
-def frame_producer(camera, frame_buffer):
+def frame_producer(capture, frame_buffer):
     while True:
-        frame = camera.get_latest_frame()
+        frame = capture.get_latest_frame()
         if frame is not None:
             frame_buffer.put_frame(frame)
         time.sleep(0.001)  # Small sleep to prevent CPU thrashing
@@ -327,24 +265,35 @@ def main():
         settings_manager.register_observer(check_model_change)
 
         region = (LEFT, TOP, RIGHT, BOTTOM)
-        camera = bettercam.create(output_idx=0, output_color="BGRA", region=region)
-        camera.start(target_fps=200, video_mode=True)
+        target_fps = int(settings_manager.get("Aimbot.fps", 999))
+        capture = ScreenCapture(region=region, output_idx=0, output_color="BGRA", target_fps=target_fps)
+        capture.start()
 
         # Initialize frame buffer with size 3
         frame_buffer = FrameRingBuffer(buffer_size=3)
 
         # Start frame producer thread
-        producer_thread = threading.Thread(target=frame_producer, args=(camera, frame_buffer), daemon=True)
+        producer_thread = threading.Thread(target=frame_producer, args=(capture, frame_buffer), daemon=True)
         producer_thread.start()
 
         frame_count = 0
         last_fps_time = time.time()
         update_gui_counter = 0  # Counter for GUI updates
 
+        last_processed_seq_id = -1
+
         while True:
-            frame = frame_buffer.get_latest_frame()
+            frame, seq_id = frame_buffer.get_latest_frame()
             if frame is None:
                 continue
+
+            # Check if we should cap inference FPS
+            if settings_manager.get("AI.cap_inference_fps", False):
+                if seq_id <= last_processed_seq_id:
+                    time.sleep(0.0001) # Sleep briefly to yield
+                    continue
+            
+            last_processed_seq_id = seq_id
             
             # Check for model reload
             if model_reload_state["needed"]:
@@ -413,7 +362,8 @@ def main():
             elapsed_time = current_time - last_fps_time
             if elapsed_time >= 0.5:  # Update FPS every 500ms instead of every second
                 fps = frame_count / elapsed_time
-                fps_overlay.update_fps(fps)
+                capture_fps = capture.get_fps()
+                fps_overlay.update_fps(fps, capture_fps)
                 frame_count = 0
                 last_fps_time = current_time
 
@@ -424,8 +374,8 @@ def main():
     except KeyboardInterrupt:
         print("\nStopping gracefully...")
     finally:
-        camera.stop()
-        del camera
+        capture.stop()
+        del capture
 
 if __name__ == "__main__":
     main()
